@@ -9,8 +9,9 @@ import signal
 from datetime import datetime
 
 # 生成配置文件名称
-GEN_APP_CONFIG = "gen_app_config.txt"
-GEN_GIE_CONFIG = "gen_gie_config.txt"
+TIMESTAMP = datetime.now().strftime("%Y%m%d%H%M%S")
+GEN_APP_CONFIG = f"gen_app_config_{TIMESTAMP}.txt"
+GEN_GIE_CONFIG = f"gen_gie_config_{TIMESTAMP}.txt"
 LOG_ROOT = "perf_logs"
 
 # 配置文件解析器
@@ -20,9 +21,8 @@ class CaseSensitiveConfigParser(configparser.ConfigParser):
         return optionstr
 
 # 创建日志保存目录
-def setup_log_dir(width, height):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = os.path.join(LOG_ROOT, f"test_{timestamp}_{width}x{height}")
+def setup_log_dir(width, height, streams):
+    log_dir = os.path.join(LOG_ROOT, f"{width}x{height}_{streams}s_{TIMESTAMP}")
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     return log_dir
@@ -172,7 +172,7 @@ def run_perf_test(base_app_config_filename, base_gie_config_filename, streams, o
     # 生成配置文件
     generate_configs(base_app_config_filename, base_gie_config_filename, streams, onnx_file, input_type, input_uri, width, height, output_type)
     # 设置日志目录
-    log_dir = setup_log_dir(width, height)
+    log_dir = setup_log_dir(width, height, streams)
 
     # 构建 engine
     conf = CaseSensitiveConfigParser()
@@ -232,7 +232,7 @@ if __name__ == "__main__":
     parser.add_argument("--input_uri", type=str, required=True, help="Input URI")
     parser.add_argument("--width", type=int, default=640, help="Streammux/Display width")
     parser.add_argument("--height", type=int, default=480, help="Streammux/Display height")
-    parser.add_argument("--output_type", type=str, choices=['rtsp', 'fake'], default="rstp", help="Output type")
+    parser.add_argument("--output_type", type=str, choices=['rtsp', 'fake'], default="rtsp", help="Output type")
     parser.add_argument("--duration", type=int, default=60, help="Test duration in seconds")
 
     args = parser.parse_args()
