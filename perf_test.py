@@ -87,7 +87,11 @@ def build_engine(config_path, engine_file):
         sys.exit(1)
 
 # 生成配置文件
-def generate_configs(base_app_config_filename, base_gie_config_filename, streams, onnx_file, input_type, input_uri, width, height, output_type):
+def generate_configs(
+        base_app_config_filename, base_gie_config_filename, 
+        streams, onnx_file, network_mode, input_type, input_uris, 
+        width, height, output_type
+    ):
     print(f"[*] Generating configuration files in current directory...")
 
     # 读取 GIE 配置文件
@@ -95,14 +99,15 @@ def generate_configs(base_app_config_filename, base_gie_config_filename, streams
     gie_config.read(base_gie_config_filename)
     # 修改 batch-size 以匹配路数
     gie_config.set("property", "batch-size", str(streams))
-    # 设置 network-mode 为 FP16 模式 -  0=FP32, 1=INT8, 2=FP16 mode
-    gie_config.set("property", "network-mode", "2")
+    # 设置 network-mode 为 fp16 模式 -  fp32: 0, int8: 1, fp16: 2
+    network_mode_map = { "fp32": "0", "int8": "1", "fp16": "2" }
+    gie_config.set("property", "network-mode", network_mode_map[network_mode])
     # 设置 model-engine-file
-    gie_config.set("property", "model-engine-file", f"model_b{streams}_gpu0_fp16.engine")
+    gie_config.set("property", "model-engine-file", f"model_b{streams}_gpu0_{network_mode}.engine")
     # 设置 onnx-file
     gie_config.set("property", "onnx-file", onnx_file)
     # 写入配置文件 GEN_GIE_CONFIG
-    with open(GEN_GIE_CONFIG, encoding='UTF-8', mode="w") as f:
+    with open(GEN_GIE_CONFIG, encoding="UTF-8", mode="w") as f:
         gie_config.write(f)
 
     # 读取 App 配置文件
@@ -114,16 +119,17 @@ def generate_configs(base_app_config_filename, base_gie_config_filename, streams
             app_config.remove_section(section)
     # 动态添加 source  -  input_type: 3=File, 4=RTSP
     type_id = "4" if input_type == "rtsp" else "3"
+    len_uris = len(input_uris)
     for i in range(streams):
         section_name = f"source{i}"
         app_config.add_section(section_name)
         app_config.set(section_name, "enable", "1")
         app_config.set(section_name, "type", type_id)
-        app_config.set(section_name, "uri", input_uri)
+        app_config.set(section_name, "uri", input_uris[i % len_uris])
         app_config.set(section_name, "gpu-id", "0")
         app_config.set(section_name, "cudadec-memtype", "0")
         # 若为 RTSP, 可设置延迟以减少抖动
-        if input_type == 'rtsp':
+        if input_type == "rtsp":
             app_config.set(section_name, "latency", "200")
 
     # 移除旧有的 sink
@@ -164,13 +170,21 @@ def generate_configs(base_app_config_filename, base_gie_config_filename, streams
         app_config.set("tests", "file-loop", "1")
 
     # 写入配置文件 GEN_APP_CONFIG
-    with open(GEN_APP_CONFIG, encoding='UTF-8', mode='w') as f:
+    with open(GEN_APP_CONFIG, encoding="UTF-8", mode="w") as f:
         app_config.write(f)
 
-def run_perf_test(base_app_config_filename, base_gie_config_filename, streams, onnx_file, input_type, input_uri, width, height, output_type, duration):
+def run_perf_test(
+        base_app_config_filename, base_gie_config_filename, 
+        streams, onnx_file, network_mode, input_type, input_uris, 
+        width, height, output_type, duration
+    ):
 
     # 生成配置文件
-    generate_configs(base_app_config_filename, base_gie_config_filename, streams, onnx_file, input_type, input_uri, width, height, output_type)
+    generate_configs(
+        base_app_config_filename, base_gie_config_filename, 
+        streams, onnx_file, network_mode, input_type, input_uris, 
+        width, height, output_type
+    )
     # 设置日志目录
     log_dir = setup_log_dir(width, height, streams)
 
@@ -224,15 +238,16 @@ def run_perf_test(base_app_config_filename, base_gie_config_filename, streams, o
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DeepStream-YOLO Perf Automation")
 
-    parser.add_argument("--app_config", type=str, default="deepstream_app_config.txt", help="Base App Config")
-    parser.add_argument("--gie_config", type=str, default="config_infer_primary_yoloV8.txt", help="Base GIE Config")
+    parser.add_argument("--app_config", type=str, default="deepstream_app_config.txt", help="Base App Config file")
+    parser.add_argument("--gie_config", type=str, default="config_infer_primary_yoloV8.txt", help="Base GIE Config file")
     parser.add_argument("--streams", type=int, required=True, help="Number of streams")
-    parser.add_argument("--onnx_file", type=str, default="yolov8s.pt.onnx", help="ONNX File")
-    parser.add_argument("--input_type", type=str, choices=['rtsp', 'file'], required=True, help="Input type")
-    parser.add_argument("--input_uri", type=str, required=True, help="Input URI")
+    parser.add_argument("--onnx_file", type=str, default="yolov8s.pt.onnx", help="ONNX file")
+    parser.add_argument("--network_mode", type=str, choices=["fp32", "int8", "fp16"], default="fp16", help="Network mode")
+    parser.add_argument("--input_type", type=str, choices=["rtsp", "file"], required=True, help="Input type")
+    parser.add_argument("--input_uri", type=str, required=True, action="append", help="Input URIs")
     parser.add_argument("--width", type=int, default=640, help="Streammux/Display width")
     parser.add_argument("--height", type=int, default=480, help="Streammux/Display height")
-    parser.add_argument("--output_type", type=str, choices=['rtsp', 'fake'], default="rtsp", help="Output type")
+    parser.add_argument("--output_type", type=str, choices=["rtsp", "fake"], default="rtsp", help="Output type")
     parser.add_argument("--duration", type=int, default=60, help="Test duration in seconds")
 
     args = parser.parse_args()
@@ -242,9 +257,11 @@ if __name__ == "__main__":
         base_gie_config_filename=args.gie_config,
         streams=args.streams,
         onnx_file=args.onnx_file,
+        network_mode=args.network_mode,
         input_type=args.input_type,
-        input_uri=args.input_uri,
+        input_uris=args.input_uri,
         width=args.width,
         height=args.height,
         output_type=args.output_type,
-        duration=args.duration)
+        duration=args.duration
+    )
