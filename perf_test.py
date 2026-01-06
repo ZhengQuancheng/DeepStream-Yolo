@@ -57,7 +57,7 @@ def build_engine(config_path, engine_file):
             if not line:
                 break
             # 打印关键信息
-            if "Building" in line in line:
+            if "Building" in line:
                 print(f"    [Build Log] {line.strip()}")
             # 构建完成
             if "**PERF" in line:
@@ -88,15 +88,18 @@ def build_engine(config_path, engine_file):
 
 # 生成配置文件
 def generate_configs(
-        base_app_config_filename, base_gie_config_filename, 
+        base_app_config_filename, base_gie_config_filename, gpu_id,
         streams, onnx_file, network_mode, input_type, input_uris, 
         width, height, output_type
     ):
     print(f"[*] Generating configuration files in current directory...")
 
+    # >>>>>>>>>>>>>>>>>>>>>> GIE Config <<<<<<<<<<<<<<<<<<<<<<<
     # 读取 GIE 配置文件
     gie_config = CaseSensitiveConfigParser()
     gie_config.read(base_gie_config_filename)
+    # GPU ID
+    gie_config.set("property", "gpu-id", str(gpu_id))
     # 修改 batch-size 以匹配路数
     gie_config.set("property", "batch-size", str(streams))
     # 设置 network-mode 为 fp16 模式 -  fp32: 0, int8: 1, fp16: 2
@@ -109,10 +112,14 @@ def generate_configs(
     # 写入配置文件 GEN_GIE_CONFIG
     with open(GEN_GIE_CONFIG, encoding="UTF-8", mode="w") as f:
         gie_config.write(f)
+    # >>>>>>>>>>>>>>>>>>>>>> GIE Config <<<<<<<<<<<<<<<<<<<<<<<
 
+    # >>>>>>>>>>>>>>>>>>>>>> App Config <<<<<<<<<<<<<<<<<<<<<<<
     # 读取 App 配置文件
     app_config = CaseSensitiveConfigParser()
     app_config.read(base_app_config_filename)
+
+    ####################### source #######################
     # 移除旧有的 source
     for section in app_config.sections():
         if section.startswith("source"):
@@ -126,44 +133,69 @@ def generate_configs(
         app_config.set(section_name, "enable", "1")
         app_config.set(section_name, "type", type_id)
         app_config.set(section_name, "uri", input_uris[i % len_uris])
-        app_config.set(section_name, "gpu-id", "0")
+        app_config.set(section_name, "gpu-id", str(gpu_id))
         app_config.set(section_name, "cudadec-memtype", "0")
+        app_config.set(section_name, "nvbuf-memory-type", "0")
         # 若为 RTSP, 可设置延迟以减少抖动
         if input_type == "rtsp":
             app_config.set(section_name, "latency", "200")
+    ####################### source #######################
 
-    # 移除旧有的 sink
-    for section in app_config.sections():
-        if section.startswith("sink"):
-            app_config.remove_section(section)
-    # 设置 sink (仅支持一个)  -  1=FakeSink 4=RTSPStreaming
-    type_id = "4" if output_type == "rtsp" else "1"
-    section_name = f"sink{i}"
-    app_config.add_section(section_name)
-    app_config.set(section_name, "enable", "1")
-    app_config.set(section_name, "type", type_id)
-    app_config.set(section_name, "sync", "1") # 1: Synchronously
-    app_config.set(section_name, "codec", "1") # 1=h264 2=h265
-    app_config.set(section_name, "enc-type", "1") # 0=Hardware 1=Software
-    app_config.set(section_name, "rtsp-port", "8554")
-    app_config.set(section_name, "udp-port", "5400")
+    ####################### streammux #######################
+    # 更新 streammux
+    app_config.set("streammux", "width", str(width))
+    app_config.set("streammux", "height", str(height))
+    app_config.set("streammux", "batch-size", str(streams))
+    app_config.set("streammux", "gpu-id", str(gpu_id))
+    app_config.set("streammux", "nvbuf-memory-type", "0")
+    if input_type == "rtsp":
+        app_config.set("streammux", "live-source", "1")
+    ####################### streammux #######################
 
+    ####################### primary-gie #######################
+    # 更新 primary-gie
+    app_config.set("primary-gie", "config-file", GEN_GIE_CONFIG)
+    app_config.set("primary-gie", "nvbuf-memory-type", "0")
+    ####################### primary-gie #######################
+
+    ####################### osd #######################
+    # 更新 osd
+    app_config.set("osd", "gpu-id", str(gpu_id))
+    app_config.set("osd", "nvbuf-memory-type", "0")
+    ####################### osd #######################
+
+    ####################### tiled display #######################
     # 更新 tiled display
+    app_config.set("tiled-display", "enable", "1")
     rows = int(math.sqrt(streams))
     cols = math.ceil(streams / rows)
     app_config.set("tiled-display", "rows", str(rows))
     app_config.set("tiled-display", "columns", str(cols))
     app_config.set("tiled-display", "width", str(width))
     app_config.set("tiled-display", "height", str(height))
+    app_config.set("tiled-display", "gpu-id", str(gpu_id))
+    app_config.set("tiled-display", "nvbuf-memory-type", "0")
+    ####################### tiled display #######################
 
-    # 更新 streammux
-    app_config.set("streammux", "width", str(width))
-    app_config.set("streammux", "height", str(height))
-    if input_type == "rtsp":
-        app_config.set("streammux", "live-source", "1")
-
-    # 更新 GIE 路径
-    app_config.set("primary-gie", "config-file", GEN_GIE_CONFIG)
+    ####################### sink #######################
+    # 移除旧有的 sink
+    for section in app_config.sections():
+        if section.startswith("sink"):
+            app_config.remove_section(section)
+    # 设置 sink (仅支持一个)
+    section_name = f"sink0"
+    app_config.add_section(section_name)
+    app_config.set(section_name, "enable", "1")
+    type_id = "4" if output_type == "rtsp" else "1"
+    app_config.set(section_name, "type", type_id) # 1=FakeSink 4=RTSPStreaming
+    app_config.set(section_name, "sync", "1") # 1: Synchronously
+    app_config.set(section_name, "codec", "1") # 1=h264 2=h265
+    app_config.set(section_name, "enc-type", "1") # 0=Hardware 1=Software
+    app_config.set(section_name, "rtsp-port", "8554")
+    app_config.set(section_name, "udp-port", "5400")
+    app_config.set(section_name, "gpu-id", str(gpu_id))
+    app_config.set(section_name, "nvbuf-memory-type", "0")
+    ####################### sink #######################
 
     # 更新 tests
     if input_type != "rtsp":
@@ -173,15 +205,18 @@ def generate_configs(
     with open(GEN_APP_CONFIG, encoding="UTF-8", mode="w") as f:
         app_config.write(f)
 
+    # >>>>>>>>>>>>>>>>>>>>>> App Config <<<<<<<<<<<<<<<<<<<<<<<
+
+
 def run_perf_test(
-        base_app_config_filename, base_gie_config_filename, 
+        base_app_config_filename, base_gie_config_filename, gpu_id,
         streams, onnx_file, network_mode, input_type, input_uris, 
         width, height, output_type, duration
     ):
 
     # 生成配置文件
     generate_configs(
-        base_app_config_filename, base_gie_config_filename, 
+        base_app_config_filename, base_gie_config_filename, gpu_id,
         streams, onnx_file, network_mode, input_type, input_uris, 
         width, height, output_type
     )
@@ -241,6 +276,7 @@ if __name__ == "__main__":
     parser.add_argument("--app_config", type=str, default="deepstream_app_config.txt", help="Base App Config file")
     parser.add_argument("--gie_config", type=str, default="config_infer_primary_yoloV8.txt", help="Base GIE Config file")
     parser.add_argument("--streams", type=int, required=True, help="Number of streams")
+    parser.add_argument("--gpu_id", type=int, default=0, help="GPU ID")
     parser.add_argument("--onnx_file", type=str, default="yolov8s.pt.onnx", help="ONNX file")
     parser.add_argument("--network_mode", type=str, choices=["fp32", "int8", "fp16"], default="fp16", help="Network mode")
     parser.add_argument("--input_type", type=str, choices=["rtsp", "file"], required=True, help="Input type")
@@ -255,6 +291,7 @@ if __name__ == "__main__":
     run_perf_test(
         base_app_config_filename=args.app_config,
         base_gie_config_filename=args.gie_config,
+        gpu_id=args.gpu_id,
         streams=args.streams,
         onnx_file=args.onnx_file,
         network_mode=args.network_mode,
